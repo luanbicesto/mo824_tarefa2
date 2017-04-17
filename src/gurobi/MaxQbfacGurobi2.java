@@ -12,10 +12,12 @@ public class MaxQbfacGurobi2 {
 
 
     try {
-      readInput("instances/qbf040");
+      readInput("instances/qbf060");
         
       GRBEnv env = new GRBEnv();
       GRBModel model = new GRBModel(env);
+      
+      model.set(GRB.DoubleParam.TimeLimit, 1800);
       
       //Creating variables
       GRBVar[] variables = new GRBVar[_size];
