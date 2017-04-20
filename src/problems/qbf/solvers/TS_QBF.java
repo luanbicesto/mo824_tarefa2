@@ -39,6 +39,10 @@ public class TS_QBF extends AbstractTS<Integer> {
 	
 	private enum OperationNeighborhood {INSERT, REMOVE, EXCHANGE};
 	
+	private enum SearchStrategy {BEST_IMPROVING, FIRST_IMPROVING};
+	
+	private SearchStrategy searchStrategy = SearchStrategy.FIRST_IMPROVING;
+	
 	private ArrayDeque<Integer> tlRemovedRandomItens;
 	
 	private Map<Integer, Integer> intensificationByRestartCounter;
@@ -144,13 +148,19 @@ public class TS_QBF extends AbstractTS<Integer> {
 
 		Double minDeltaCost;
 		Integer bestCandIn = null, bestCandOut = null;
+		
+		if(searchStrategy == SearchStrategy.FIRST_IMPROVING) {
+		    
+		} else {
+		    
+		}
 
 		minDeltaCost = Double.POSITIVE_INFINITY;
 		//updateCL();
 		// Evaluate insertions
 		for (Integer candIn : CL) {
 			Double deltaCost = ObjFunction.evaluateInsertionCost(candIn, incumbentSol);
-			if (evaluationAllowed(candIn, deltaCost, OperationNeighborhood.INSERT)) {
+			if (evaluationAllowed(candIn, OperationNeighborhood.INSERT)) {
 				if (deltaCost < minDeltaCost) {
 					minDeltaCost = deltaCost;
 					bestCandIn = candIn;
@@ -161,7 +171,7 @@ public class TS_QBF extends AbstractTS<Integer> {
 		// Evaluate removals
 		for (Integer candOut : incumbentSol) {
 			Double deltaCost = ObjFunction.evaluateRemovalCost(candOut, incumbentSol);
-			if (evaluationAllowed(candOut, deltaCost, OperationNeighborhood.REMOVE)) {
+			if (evaluationAllowed(candOut, OperationNeighborhood.REMOVE)) {
 				if (deltaCost < minDeltaCost) {
 					minDeltaCost = deltaCost;
 					bestCandIn = null;
@@ -173,7 +183,7 @@ public class TS_QBF extends AbstractTS<Integer> {
 		for (Integer candIn : CL) {
 			for (Integer candOut : incumbentSol) {
 				Double deltaCost = ObjFunction.evaluateExchangeCost(candIn, candOut, incumbentSol);
-				if (evaluationAllowed(candIn, candOut, deltaCost)) {
+				if (evaluationAllowed(candIn, candOut)) {
 					if (deltaCost < minDeltaCost) {
 						minDeltaCost = deltaCost;
 						bestCandIn = candIn;
@@ -204,6 +214,85 @@ public class TS_QBF extends AbstractTS<Integer> {
 		repair();
 		
 		return null;
+	}
+	
+	private void firstImprovingSearch(Integer bestCandIn, Integer bestCandOut) {
+	    ArrayList<Pair<Integer, Integer>> allMoviments = new ArrayList<>();
+	    
+	    generateIndexesForInsertion(allMoviments);
+	    generateIndexesForRemoval(allMoviments);
+	    generateIndexesForExchange(allMoviments);
+	    Collections.shuffle(allMoviments);
+	    
+	    firstImprovingCheckMoviments(allMoviments, bestCandIn, bestCandOut);
+	}
+	
+	private void firstImprovingCheckMoviments(ArrayList<Pair<Integer, Integer>> allMoviments, Integer bestCandIn, Integer bestCandOut) {
+	    for(Pair<Integer, Integer> moviment : allMoviments) {
+	        if(isInsertionMovimentFI(moviment)) {
+	            if(applyInsertionMoviment(moviment.getLeft())) {
+	                bestCandIn = moviment.getLeft();
+	                break;
+	            } else if(isRemovalMovimentFI(moviment)) {
+	                if(applyRemovalMoviment(moviment.getRight())) {
+	                    bestCandOut = moviment.getRight();
+	                    break;
+	                }
+	            } else { //exchange
+	                if(applyExchangeMoviment(moviment.getLeft(), moviment.getRight())) {
+	                    bestCandIn = moviment.getLeft();
+	                    bestCandOut = moviment.getRight();
+	                }
+	            }
+	        }
+	    }
+	}
+	
+	private boolean isInsertionMovimentFI(Pair<Integer, Integer> moviment) {
+        return moviment.getRight() == fake;
+    }
+	
+	private boolean isRemovalMovimentFI(Pair<Integer, Integer> moviment) {
+	    return moviment.getLeft() == fake;
+	}
+	
+	private boolean applyExchangeMoviment(Integer candIn, Integer candOut) {
+	    Double deltaCost = ObjFunction.evaluateExchangeCost(candIn, candOut, incumbentSol);
+        return evaluationAllowed(candIn, candOut) && deltaCost < 0;
+    }
+
+	private boolean applyInsertionMoviment(Integer candIn) {
+	    Double deltaCost = ObjFunction.evaluateInsertionCost(candIn, incumbentSol);
+        return evaluationAllowed(candIn, OperationNeighborhood.INSERT) && deltaCost < 0;
+        
+	}
+	
+	private boolean applyRemovalMoviment(Integer candOut) {
+        Double deltaCost = ObjFunction.evaluateRemovalCost(candOut, incumbentSol);
+        return evaluationAllowed(candOut, OperationNeighborhood.REMOVE) && deltaCost < 0;
+    }
+	
+	private void generateIndexesForExchange(ArrayList<Pair<Integer, Integer>> allIndexes) {
+	    for (Integer candIn : CL) {
+            for (Integer candOut : incumbentSol) {
+                Pair<Integer, Integer> newIndex = new Pair<Integer, Integer>(candIn, candOut);
+                allIndexes.add(newIndex);
+            }
+	    }
+    }
+	
+	private void generateIndexesForRemoval(ArrayList<Pair<Integer, Integer>> allIndexes) {
+        for (Integer candOut : incumbentSol) {
+            Pair<Integer, Integer> newIndex = new Pair<Integer, Integer>(fake, candOut);
+            allIndexes.add(newIndex);
+        }
+    }
+	
+	private void generateIndexesForInsertion(ArrayList<Pair<Integer, Integer>> allIndexes) {
+	    for (Integer candIn : CL) {
+	        Pair<Integer, Integer> newIndex = new Pair<Integer, Integer>(candIn, fake);
+	        allIndexes.add(newIndex);
+	    }
 	}
 	
 	public void updateIntensificationByRestartCounter() {
@@ -250,7 +339,7 @@ public class TS_QBF extends AbstractTS<Integer> {
 	    return (int) Math.round(intensificationByRestartCounter.size() * ((double)PERCENTAGE_FIXED_ITENS/100));
 	}
 
-	private boolean evaluationAllowed(Integer candidate, Double deltaCost, OperationNeighborhood operation) {
+	private boolean evaluationAllowed(Integer candidate, OperationNeighborhood operation) {
 	    if(statusIntensificationProcess == STATUS.ACTIVE 
 	            && operation == OperationNeighborhood.REMOVE
 	            && fixedVariablesIntensification.contains(candidate.intValue())) {
@@ -260,8 +349,8 @@ public class TS_QBF extends AbstractTS<Integer> {
 	    return !(TL.contains(candidate) || tlRemovedRandomItens.contains(candidate)); //|| incumbentSol.cost+deltaCost < bestSol.cost;
 	}
 	
-	private boolean evaluationAllowed(Integer candIn, Integer candOut, Double deltaCost) {
-        return evaluationAllowed(candIn, deltaCost, OperationNeighborhood.INSERT) && evaluationAllowed(candOut, deltaCost, OperationNeighborhood.REMOVE);
+	private boolean evaluationAllowed(Integer candIn, Integer candOut) {
+        return evaluationAllowed(candIn, OperationNeighborhood.INSERT) && evaluationAllowed(candOut, OperationNeighborhood.REMOVE);
     }
 	
 	private void repair() {
@@ -330,7 +419,7 @@ public class TS_QBF extends AbstractTS<Integer> {
 	public static void main(String[] args) throws IOException {
 
 		long startTime = System.currentTimeMillis();
-		TS_QBF tabusearch = new TS_QBF(20, 100000, "instances/qbf100");
+		TS_QBF tabusearch = new TS_QBF(20, 100000, "instances/qbf200");
 		Solution<Integer> bestSol = tabusearch.solve();
 		System.out.println("maxVal = " + bestSol);
 		long endTime   = System.currentTimeMillis();
