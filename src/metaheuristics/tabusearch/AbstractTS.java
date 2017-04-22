@@ -28,7 +28,7 @@ public abstract class AbstractTS<E> {
 	/**
 	 * a random number generator
 	 */
-	static Random rng = new Random(0);
+	protected static Random rng = new Random(0);
 
 	/**
 	 * the objective function being optimized
@@ -79,6 +79,18 @@ public abstract class AbstractTS<E> {
 	 * the Tabu List of elements to enter the solution.
 	 */
 	protected ArrayDeque<E> TL;
+	
+	protected int numberOfIterationsToStartIntensification;
+	
+	protected int numberOfIterationsOfIntensification;
+	
+	protected enum STATUS {ACTIVE, DEACTIVE};
+	
+	protected STATUS statusIntensificationProcess;
+	
+	private int countIterationsStartIntensification;
+	
+	private int countIterationsOfIntensification;
 
 	/**
 	 * Creates the Candidate List, which is an ArrayList of candidate elements
@@ -131,6 +143,18 @@ public abstract class AbstractTS<E> {
 	 * @return An local optimum solution.
 	 */
 	public abstract Solution<E> neighborhoodMove();
+	
+	public abstract void updateIntensificationByRestartCounter();
+	
+	public abstract void resetIntensificationStructures();
+	
+	public abstract void setFixedComponentsIntensification();
+	
+	public void initIntensificationByRestart() {
+	    incumbentSol = new Solution<E>(bestSol);
+	    updateCL();
+	    setFixedComponentsIntensification();
+	}
 
 	/**
 	 * Constructor for the AbstractTS class.
@@ -142,10 +166,16 @@ public abstract class AbstractTS<E> {
 	 * @param iterations
 	 *            The number of iterations which the TS will be executed.
 	 */
-	public AbstractTS(Evaluator<E> objFunction, Integer tenure, Integer iterations) {
+	public AbstractTS(Evaluator<E> objFunction, Integer tenure, Integer iterations
+	        ,int numberOfIterationsToStartIntensification, int numberOfIterationsOfIntensification) {
 		this.ObjFunction = objFunction;
 		this.tenure = tenure;
 		this.iterations = iterations;
+		this.numberOfIterationsOfIntensification = numberOfIterationsOfIntensification;
+		this.numberOfIterationsToStartIntensification = numberOfIterationsToStartIntensification;
+		this.countIterationsOfIntensification = 0;
+		this.countIterationsStartIntensification = 0;
+		this.statusIntensificationProcess = STATUS.DEACTIVE;
 	}
 
 	/**
@@ -167,7 +197,7 @@ public abstract class AbstractTS<E> {
 
 			Double maxCost = Double.NEGATIVE_INFINITY, minCost = Double.POSITIVE_INFINITY;
 			incumbentCost = incumbentSol.cost;
-			updateCL();
+			//updateCL();
 
 			/*
 			 * Explore all candidate elements to enter the solution, saving the
@@ -222,11 +252,36 @@ public abstract class AbstractTS<E> {
 			if (bestSol.cost > incumbentSol.cost) {
 				bestSol = new Solution<E>(incumbentSol);
 				if (verbose)
-					System.out.println("(Iter. " + i + ") BestSol = " + bestSol);
+					System.out.println((statusIntensificationProcess == STATUS.ACTIVE ? "INTENSIFICATION - " : "") 
+				    + "(Iter. " + i + ") BestSol = " + bestSol);
 			}
+			applyIntensificationByRestart();
 		}
 
 		return bestSol;
+	}
+	
+	private void applyIntensificationByRestart() {
+	    if(statusIntensificationProcess == STATUS.DEACTIVE) {
+            countIterationsStartIntensification++;
+            updateIntensificationByRestartCounter();
+        } else {
+            countIterationsOfIntensification++;
+        }
+        
+        if(countIterationsStartIntensification == numberOfIterationsToStartIntensification) {
+            //start intensification process
+            statusIntensificationProcess = STATUS.ACTIVE;
+            countIterationsStartIntensification = 0;
+            initIntensificationByRestart();
+        }
+        
+        if(countIterationsOfIntensification == numberOfIterationsOfIntensification) {
+            //end intensification process
+            statusIntensificationProcess = STATUS.DEACTIVE;
+            countIterationsOfIntensification = 0;
+            resetIntensificationStructures();
+        }
 	}
 
 	/**

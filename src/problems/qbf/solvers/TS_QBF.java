@@ -3,6 +3,15 @@ package problems.qbf.solvers;
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import metaheuristics.tabusearch.AbstractTS;
 import problems.qbf.QBF_Inverse;
@@ -21,6 +30,24 @@ import solutions.Solution;
 public class TS_QBF extends AbstractTS<Integer> {
 	
 	private final Integer fake = new Integer(-1);
+	
+	private static final int INTERATIONS_TO_START_INTENSIFICATION = 800;
+	
+	private static final int INTERATIONS_OF_INTENSIFICATION = 400;
+	
+	private static final int PERCENTAGE_FIXED_ITENS = 20;
+	
+	private enum OperationNeighborhood {INSERT, REMOVE, EXCHANGE};
+	
+	private enum SearchStrategy {BEST_IMPROVING, FIRST_IMPROVING};
+	
+	private SearchStrategy searchStrategy = SearchStrategy.FIRST_IMPROVING;
+	
+	private ArrayDeque<Integer> tlRemovedRandomItens;
+	
+	private Map<Integer, Integer> intensificationByRestartCounter;
+	
+	private Set<Integer> fixedVariablesIntensification;
 
 	/**
 	 * Constructor for the TS_QBF class. An inverse QBF objective function is
@@ -37,7 +64,11 @@ public class TS_QBF extends AbstractTS<Integer> {
 	 *             necessary for I/O operations.
 	 */
 	public TS_QBF(Integer tenure, Integer iterations, String filename) throws IOException {
-		super(new QBF_Inverse(filename), tenure, iterations);
+		super(new QBF_Inverse(filename), tenure, iterations
+		        ,INTERATIONS_TO_START_INTENSIFICATION, INTERATIONS_OF_INTENSIFICATION);
+		tlRemovedRandomItens = new ArrayDeque<>();
+		intensificationByRestartCounter = new HashMap<>();
+		fixedVariablesIntensification = new HashSet<>();
 	}
 
 	/* (non-Javadoc)
@@ -88,9 +119,8 @@ public class TS_QBF extends AbstractTS<Integer> {
 	 */
 	@Override
 	public void updateCL() {
-
-		// do nothing
-
+	    CL = makeCL();
+	    CL.removeAll(incumbentSol);
 	}
 
 	/**
@@ -115,69 +145,290 @@ public class TS_QBF extends AbstractTS<Integer> {
 	 */
 	@Override
 	public Solution<Integer> neighborhoodMove() {
+		Pair<Integer, Integer> bestCandidates = new Pair<Integer, Integer>(fake, fake);
+		//searchStrategy = Double.compare(rng.nextDouble(), 0.6) <= 0 ? SearchStrategy.FIRST_IMPROVING : SearchStrategy.BEST_IMPROVING;
+		
+		if(searchStrategy == SearchStrategy.FIRST_IMPROVING) {
+		    bestCandidates = firstImprovingSearch();
+		}
+		
+        if (searchStrategy == SearchStrategy.BEST_IMPROVING
+                || (searchStrategy == SearchStrategy.FIRST_IMPROVING && bestCandidates.getLeft() == fake && bestCandidates.getRight() == fake)) {
+            bestCandidates = bestImprovingSearch();
+        }
 
-		Double minDeltaCost;
-		Integer bestCandIn = null, bestCandOut = null;
-
-		minDeltaCost = Double.POSITIVE_INFINITY;
-		updateCL();
-		// Evaluate insertions
-		for (Integer candIn : CL) {
-			Double deltaCost = ObjFunction.evaluateInsertionCost(candIn, incumbentSol);
-			if (!TL.contains(candIn) || incumbentSol.cost+deltaCost < bestSol.cost) {
-				if (deltaCost < minDeltaCost) {
-					minDeltaCost = deltaCost;
-					bestCandIn = candIn;
-					bestCandOut = null;
-				}
-			}
-		}
-		// Evaluate removals
-		for (Integer candOut : incumbentSol) {
-			Double deltaCost = ObjFunction.evaluateRemovalCost(candOut, incumbentSol);
-			if (!TL.contains(candOut) || incumbentSol.cost+deltaCost < bestSol.cost) {
-				if (deltaCost < minDeltaCost) {
-					minDeltaCost = deltaCost;
-					bestCandIn = null;
-					bestCandOut = candOut;
-				}
-			}
-		}
-		// Evaluate exchanges
-		for (Integer candIn : CL) {
-			for (Integer candOut : incumbentSol) {
-				Double deltaCost = ObjFunction.evaluateExchangeCost(candIn, candOut, incumbentSol);
-				if ((!TL.contains(candIn) && !TL.contains(candOut)) || incumbentSol.cost+deltaCost < bestSol.cost) {
-					if (deltaCost < minDeltaCost) {
-						minDeltaCost = deltaCost;
-						bestCandIn = candIn;
-						bestCandOut = candOut;
-					}
-				}
-			}
-		}
 		// Implement the best non-tabu move
 		TL.poll();
-		if (bestCandOut != null) {
-			incumbentSol.remove(bestCandOut);
-			CL.add(bestCandOut);
-			TL.add(bestCandOut);
+		if (bestCandidates.getRight() != fake) {
+			incumbentSol.remove(bestCandidates.getRight());
+			CL.add(bestCandidates.getRight());
+			TL.add(bestCandidates.getRight());
 		} else {
 			TL.add(fake);
 		}
 		TL.poll();
-		if (bestCandIn != null) {
-			incumbentSol.add(bestCandIn);
-			CL.remove(bestCandIn);
-			TL.add(bestCandIn);
+		if (bestCandidates.getLeft() != fake) {
+			incumbentSol.add(bestCandidates.getLeft());
+			CL.remove(bestCandidates.getLeft());
+			TL.add(bestCandidates.getLeft());
 		} else {
 			TL.add(fake);
 		}
-		ObjFunction.evaluate(incumbentSol);
+		
+		tlRemovedRandomItens.clear();
+		repair();
 		
 		return null;
 	}
+	
+	private Pair<Integer, Integer> bestImprovingSearch() {
+	    Double minDeltaCost;
+	    Integer bestCandIn = fake;
+	    Integer bestCandOut = fake;
+	    
+	    minDeltaCost = Double.POSITIVE_INFINITY;
+        //updateCL();
+        // Evaluate insertions
+        for (Integer candIn : CL) {
+            Double deltaCost = ObjFunction.evaluateInsertionCost(candIn, incumbentSol);
+            if (evaluationAllowed(candIn, OperationNeighborhood.INSERT)) {
+                if (deltaCost < minDeltaCost) {
+                    minDeltaCost = deltaCost;
+                    bestCandIn = candIn;
+                    bestCandOut = fake;
+                }
+            }
+        }
+        // Evaluate removals
+        for (Integer candOut : incumbentSol) {
+            Double deltaCost = ObjFunction.evaluateRemovalCost(candOut, incumbentSol);
+            if (evaluationAllowed(candOut, OperationNeighborhood.REMOVE)) {
+                if (deltaCost < minDeltaCost) {
+                    minDeltaCost = deltaCost;
+                    bestCandIn = fake;
+                    bestCandOut = candOut;
+                }
+            }
+        }
+        // Evaluate exchanges
+        for (Integer candIn : CL) {
+            for (Integer candOut : incumbentSol) {
+                Double deltaCost = ObjFunction.evaluateExchangeCost(candIn, candOut, incumbentSol);
+                if (evaluationAllowed(candIn, candOut)) {
+                    if (deltaCost < minDeltaCost) {
+                        minDeltaCost = deltaCost;
+                        bestCandIn = candIn;
+                        bestCandOut = candOut;
+                    }
+                }
+            }
+        }
+        
+        return new Pair<Integer, Integer>(bestCandIn, bestCandOut);
+	}
+	
+	private Pair<Integer, Integer> firstImprovingSearch() {
+	    ArrayList<Pair<Integer, Integer>> allMoviments = new ArrayList<>();
+	    
+	    generateIndexesForInsertion(allMoviments);
+	    generateIndexesForRemoval(allMoviments);
+	    generateIndexesForExchange(allMoviments);
+	    Collections.shuffle(allMoviments, rng);
+	    
+	    return firstImprovingCheckMoviments(allMoviments);
+	}
+	
+    private Pair<Integer, Integer> firstImprovingCheckMoviments(ArrayList<Pair<Integer, Integer>> allMoviments) {
+        Integer bestCandIn = fake;
+        Integer bestCandOut = fake;
+        
+        for (Pair<Integer, Integer> moviment : allMoviments) {
+            if (isInsertionMovimentFI(moviment)) {
+                if (applyInsertionMoviment(moviment.getLeft())) {
+                    bestCandIn = moviment.getLeft();
+                    break;
+                }
+            } else if (isRemovalMovimentFI(moviment)) {
+                if (applyRemovalMoviment(moviment.getRight())) {
+                    bestCandOut = moviment.getRight();
+                    break;
+                }
+            } else { // exchange
+                if (applyExchangeMoviment(moviment.getLeft(), moviment.getRight())) {
+                    bestCandIn = moviment.getLeft();
+                    bestCandOut = moviment.getRight();
+                    break;
+                }
+            }
+        }
+        
+        return new Pair<Integer, Integer>(bestCandIn, bestCandOut);
+    }
+	
+	private boolean isInsertionMovimentFI(Pair<Integer, Integer> moviment) {
+        return moviment.getRight() == fake;
+    }
+	
+	private boolean isRemovalMovimentFI(Pair<Integer, Integer> moviment) {
+	    return moviment.getLeft() == fake;
+	}
+	
+	private boolean applyExchangeMoviment(Integer candIn, Integer candOut) {
+	    Double deltaCost = ObjFunction.evaluateExchangeCost(candIn, candOut, incumbentSol);
+        return evaluationAllowed(candIn, candOut) && deltaCost < 0;
+    }
 
+	private boolean applyInsertionMoviment(Integer candIn) {
+	    Double deltaCost = ObjFunction.evaluateInsertionCost(candIn, incumbentSol);
+        return evaluationAllowed(candIn, OperationNeighborhood.INSERT) && deltaCost < 0;
+        
+	}
+	
+	private boolean applyRemovalMoviment(Integer candOut) {
+        Double deltaCost = ObjFunction.evaluateRemovalCost(candOut, incumbentSol);
+        return evaluationAllowed(candOut, OperationNeighborhood.REMOVE) && deltaCost < 0;
+    }
+	
+	private void generateIndexesForExchange(ArrayList<Pair<Integer, Integer>> allIndexes) {
+	    for (Integer candIn : CL) {
+            for (Integer candOut : incumbentSol) {
+                Pair<Integer, Integer> newIndex = new Pair<Integer, Integer>(candIn, candOut);
+                allIndexes.add(newIndex);
+            }
+	    }
+    }
+	
+	private void generateIndexesForRemoval(ArrayList<Pair<Integer, Integer>> allIndexes) {
+        for (Integer candOut : incumbentSol) {
+            Pair<Integer, Integer> newIndex = new Pair<Integer, Integer>(fake, candOut);
+            allIndexes.add(newIndex);
+        }
+    }
+	
+	private void generateIndexesForInsertion(ArrayList<Pair<Integer, Integer>> allIndexes) {
+	    for (Integer candIn : CL) {
+	        Pair<Integer, Integer> newIndex = new Pair<Integer, Integer>(candIn, fake);
+	        allIndexes.add(newIndex);
+	    }
+	}
+	
+	public void updateIntensificationByRestartCounter() {
+	    for(Integer element : incumbentSol) {
+	        Integer elementCount = intensificationByRestartCounter.get(element.intValue());
+	        
+	        if(elementCount == null) {
+	            intensificationByRestartCounter.put(element.intValue(), 1);
+	        } else {
+	            intensificationByRestartCounter.put(element.intValue(), elementCount.intValue() + 1);
+	        }
+	    }
+	}
+	
+	public void resetIntensificationStructures() {
+	    this.intensificationByRestartCounter.clear();
+	    this.fixedVariablesIntensification.clear();
+	}
+	
+	public void setFixedComponentsIntensification() {
+	    fixedVariablesIntensification.clear();
+	    int index = 0;
+	    int numberFixedElements = 0;
+	    
+	    Map<Integer, Integer> orderedVariablesOcurrence = intensificationByRestartCounter.entrySet()
+                                        .stream()
+                                        .sorted(Map.Entry.comparingByValue(Collections.reverseOrder()))
+                                        .collect(Collectors.toMap(
+                                                Map.Entry::getKey, 
+                                                Map.Entry::getValue, 
+                                                (e1, e2) -> e1, 
+                                                LinkedHashMap::new
+                                              ));
+	    
+	    numberFixedElements = computeNumberFixedElements();
+	    Iterator<Integer> iterator = orderedVariablesOcurrence.keySet().iterator();
+	    while(iterator.hasNext() && index < numberFixedElements) {
+	        fixedVariablesIntensification.add(iterator.next().intValue());
+	        index++;
+	    }
+	}
+	
+	private int computeNumberFixedElements() {
+	    return (int) Math.round(intensificationByRestartCounter.size() * ((double)PERCENTAGE_FIXED_ITENS/100));
+	}
+
+	private boolean evaluationAllowed(Integer candidate, OperationNeighborhood operation) {
+	    if(statusIntensificationProcess == STATUS.ACTIVE 
+	            && operation == OperationNeighborhood.REMOVE
+	            && fixedVariablesIntensification.contains(candidate.intValue())) {
+	        return false;
+	    }
+	    
+	    return !(TL.contains(candidate) || tlRemovedRandomItens.contains(candidate)); //|| incumbentSol.cost+deltaCost < bestSol.cost;
+	}
+	
+	private boolean evaluationAllowed(Integer candIn, Integer candOut) {
+        return evaluationAllowed(candIn, OperationNeighborhood.INSERT) && evaluationAllowed(candOut, OperationNeighborhood.REMOVE);
+    }
+	
+	private void repair() {
+        randomizedSimplestRepair();
+        ObjFunction.evaluate(incumbentSol);
+    }
+	
+	private void randomizedSimplestRepair() {
+        double removeCandIndexProb = 0;
+        int removeCandIndex = 0;
+        Solution<Integer> incumbentSolCopy = new Solution<Integer>(incumbentSol);
+        sortSolution(incumbentSolCopy);
+        
+        /*Simplest repair: remove the right element that is incorrect*/
+        for(int index = 0; index < incumbentSolCopy.size(); index++) {
+            if(index < (incumbentSolCopy.size() - 1) && applyAdjacentConstraint(incumbentSolCopy, index)) {
+                removeCandIndexProb = rng.nextDouble();
+                removeCandIndex = Double.compare(removeCandIndexProb, 0.5) <= 0 ? index : index + 1;
+                
+                int indexElement = incumbentSol.indexOf(incumbentSolCopy.get(removeCandIndex));
+                Integer element = incumbentSol.get(indexElement);
+                CL.add(element);
+                
+                if(!tlRemovedRandomItens.contains(element)) {
+                    tlRemovedRandomItens.add(incumbentSol.get(indexElement));
+                }
+                
+                removeElementByValue(incumbentSol, incumbentSolCopy.get(removeCandIndex));
+                incumbentSolCopy.remove(removeCandIndex);
+                
+                if(removeCandIndex == index) {
+                    index--;
+                }
+            }
+        }
+    }
+	
+	private void removeElementByValue(Solution<Integer> solution, int targetValue) {
+        for(int index = 0; index < solution.size(); index++) {
+            if(solution.get(index).intValue() == targetValue) {
+                solution.remove(index);
+                break;
+            }
+        }
+    }
+	
+	private boolean applyAdjacentConstraint(Solution<Integer> currentSolution, int currentIndex) {
+        return currentSolution.get(currentIndex) + 1 == currentSolution.get(currentIndex+1);
+    }
+	
+	private void sortSolution(Solution<Integer> sol) {
+        sol.sort(new Comparator<Integer>() {
+            @Override
+            public int compare(Integer element1, Integer element2)
+            {
+
+                return  element1.compareTo(element2);
+            }
+        });
+    }
+	
 	/**
 	 * A main method used for testing the TS metaheuristic.
 	 * 
@@ -185,7 +436,7 @@ public class TS_QBF extends AbstractTS<Integer> {
 	public static void main(String[] args) throws IOException {
 
 		long startTime = System.currentTimeMillis();
-		TS_QBF tabusearch = new TS_QBF(20, 10000, "instances/qbf100");
+		TS_QBF tabusearch = new TS_QBF(20, 500000, "instances/qbf100");
 		Solution<Integer> bestSol = tabusearch.solve();
 		System.out.println("maxVal = " + bestSol);
 		long endTime   = System.currentTimeMillis();
