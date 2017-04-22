@@ -5,7 +5,7 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.io.Reader;
 import java.io.StreamTokenizer;
-public class MaxQbfacGurobi2 {
+public class MaxQbfacGurobi {
   private static int _size;  
   private static Double A[][];  
   public static void main(String[] args) {
