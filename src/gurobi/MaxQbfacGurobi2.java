@@ -12,7 +12,7 @@ public class MaxQbfacGurobi2 {
 
 
     try {
-      readInput("instances/qbf060");
+      readInput("instances/qbf040");
         
       GRBEnv env = new GRBEnv();
       GRBModel model = new GRBModel(env);
